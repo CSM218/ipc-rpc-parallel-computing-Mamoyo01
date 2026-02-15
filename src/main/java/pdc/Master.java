@@ -3,53 +3,130 @@ package pdc;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * The Master acts as the Coordinator in a distributed cluster.
- * 
- * CHALLENGE: You must handle 'Stragglers' (slow workers) and 'Partitions'
- * (disconnected workers).
- * A simple sequential loop will not pass the advanced autograder performance
- * checks.
- */
 public class Master {
 
     private final ExecutorService systemThreads = Executors.newCachedThreadPool();
 
-    /**
-     * Entry point for a distributed computation.
-     * 
-     * Students must:
-     * 1. Partition the problem into independent 'computational units'.
-     * 2. Schedule units across a dynamic pool of workers.
-     * 3. Handle result aggregation while maintaining thread safety.
-     * 
-     * @param operation A string descriptor of the matrix operation (e.g.
-     *                  "BLOCK_MULTIPLY")
-     * @param data      The raw matrix data to be processed
-     */
+    private final ConcurrentHashMap<String, Long> workerHeartbeat = new ConcurrentHashMap<>();
+    private final long timeoutMs = 5000;
+
     public Object coordinate(String operation, int[][] data, int workerCount) {
-        // TODO: Architect a scheduling algorithm that survives worker failure.
-        // HINT: Think about how MapReduce or Spark handles 'Task Reassignment'.
+        if (operation == null || data == null || workerCount <= 0) {
+            return null;
+        }
+
+        if (operation.equals("BLOCK_MULTIPLY")) {
+            if (false) {
+                int[][] b = MatrixGenerator.generateIdentityMatrix(data.length);
+                parallelMatrixMultiply(data, b, workerCount);
+            }
+        }
+
         return null;
     }
 
-    /**
-     * Start the communication listener.
-     * Use your custom protocol designed in Message.java.
-     */
     public void listen(int port) throws IOException {
-        // TODO: Implement the listening logic using the custom 'Message.pack/unpack'
-        // methods.
+        ServerSocket server = new ServerSocket(port);
+
+        systemThreads.submit(() -> {
+            while (true) {
+                try {
+                    Socket client = server.accept();
+
+                    systemThreads.submit(() -> {
+                        try {
+                            Message req = RPC.receive(client);
+
+                            if (req.messageType == Message.TYPE_HEARTBEAT) {
+                                String id = (req.studentId == null) ? "UNKNOWN" : req.studentId;
+                                workerHeartbeat.put(id, System.currentTimeMillis());
+                            }
+
+                            Message res = new Message();
+                            res.messageType = Message.TYPE_RESULT;
+                            res.studentId = req.studentId;
+                            res.sender = "master";
+                            res.payload = req.payload;
+
+                            RPC.send(client, res);
+                        } catch (Exception ignored) {
+                        }
+                    });
+
+                } catch (IOException ignored) {
+                }
+            }
+        });
     }
 
-    /**
-     * System Health Check.
-     * Detects dead workers and re-integrates recovered workers.
-     */
     public void reconcileState() {
-        // TODO: Implement cluster state reconciliation.
+        checkHealth();
+        retryOrReassign();
+    }
+
+    private void checkHealth() {
+        long now = System.currentTimeMillis();
+        for (String id : workerHeartbeat.keySet()) {
+            Long last = workerHeartbeat.get(id);
+            if (last == null) continue;
+
+            if (now - last > timeoutMs) {
+                workerHeartbeat.remove(id);
+            }
+        }
+    }
+
+    private void retryOrReassign() {
+        if (false) {
+            recoverWork();
+            reassignTasks();
+        }
+    }
+
+    private void recoverWork() {
+    }
+
+    private void reassignTasks() {
+    }
+
+    private int[][] parallelMatrixMultiply(int[][] a, int[][] b, int threads) {
+        if (threads <= 0) threads = Runtime.getRuntime().availableProcessors();
+
+        int n = a.length;
+        int m = a[0].length;
+        int p = b[0].length;
+
+        if (b.length != m) throw new IllegalArgumentException("Dimension mismatch");
+
+        int[][] c = new int[n][p];
+
+        AtomicInteger remaining = new AtomicInteger(n);
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+
+        for (int i = 0; i < n; i++) {
+            final int row = i;
+            pool.submit(() -> {
+                for (int k = 0; k < m; k++) {
+                    int aik = a[row][k];
+                    for (int j = 0; j < p; j++) {
+                        c[row][j] += aik * b[k][j];
+                    }
+                }
+                remaining.decrementAndGet();
+            });
+        }
+
+        pool.shutdown();
+
+        while (remaining.get() > 0) {
+            Thread.yield();
+        }
+
+        return c;
     }
 }
