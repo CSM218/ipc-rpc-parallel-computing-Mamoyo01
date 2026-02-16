@@ -1,32 +1,59 @@
 package pdc;
 
+import java.io.IOException;
 import java.net.Socket;
 
-/**
- * A Worker is a node in the cluster capable of high-concurrency computation.
- * 
- * CHALLENGE: Efficiency is key. The worker must minimize latency by
- * managing its own internal thread pool and memory buffers.
- */
 public class Worker {
 
-    /**
-     * Connects to the Master and initiates the registration handshake.
-     * The handshake must exchange 'Identity' and 'Capability' sets.
-     */
+    private Socket socket;
+    private volatile boolean running = false;
+
+    // connect to master and do a simple rpc-style request/response handshake
     public void joinCluster(String masterHost, int port) {
-        // TODO: Implement the cluster join protocol
+        try {
+            this.socket = new Socket(masterHost, port);
+
+            Message request = new Message();
+            request.messageType = Message.TYPE_HELLO;
+            request.studentId = System.getenv().getOrDefault("CSM218_STUDENT_ID", "UNKNOWN");
+            request.sender = "worker";
+            request.payload = new byte[0];
+
+            Message response = RPC.call(this.socket, request);
+
+            this.running = (response != null);
+        } catch (IOException e) {
+            this.running = false;
+        }
     }
 
-    /**
-     * Executes a received task block.
-     * 
-     * Students must ensure:
-     * 1. The operation is atomic from the perspective of the Master.
-     * 2. Overlapping tasks do not cause race conditions.
-     * 3. 'End-to-End' logs are precise for performance instrumentation.
-     */
     public void execute() {
-        // TODO: Implement internal task scheduling
+        if (socket == null || !running) return;
+
+        try {
+            while (running) {
+                Message request = RPC.receive(socket);
+
+                if (request.messageType == Message.TYPE_TASK) {
+                    Message result = new Message();
+                    result.messageType = Message.TYPE_RESULT;
+                    result.studentId = request.studentId;
+                    result.sender = "worker";
+                    result.payload = request.payload; // placeholder until task logic is added
+                    RPC.send(socket, result);
+                } else if (request.messageType == Message.TYPE_HEARTBEAT) {
+                    Message pong = new Message();
+                    pong.messageType = Message.TYPE_HEARTBEAT;
+                    pong.studentId = request.studentId;
+                    pong.sender = "worker";
+                    pong.payload = new byte[0];
+                    RPC.send(socket, pong);
+                } else {
+                    // ignore unknown message types for now
+                }
+            }
+        } catch (IOException e) {
+            running = false;
+        }
     }
 }
